@@ -1,0 +1,3 @@
+// Generated PiPL resource. PiPLTool converts PriceTicker.r -> PriceTicker.rcp
+// during the build (see the CustomBuild step in Win/PriceTicker.vcxproj).
+#include "PriceTicker.rcp"

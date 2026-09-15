@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{4F2A9B10-9C3D-4E7A-8B21-3E5C7A9D01AA}</ProjectGuid>
+    <RootNamespace>PriceTicker</RootNamespace>
+    <ProjectName>PriceTicker</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+
+  <!-- Sensible defaults so the project builds on this machine without extra
+       setup. Override any of these with a system/user environment variable. -->
+  <PropertyGroup Label="SdkPaths">
+    <PREMIERE_SDK_PATH Condition="'$(PREMIERE_SDK_PATH)'==''">D:\source\SDK\Adobe\Premiere Pro</PREMIERE_SDK_PATH>
+    <PREMSDKBUILDPATH Condition="'$(PREMSDKBUILDPATH)'==''">$(ProjectDir)..\_build</PREMSDKBUILDPATH>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseOfMfc>false</UseOfMfc>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+
+  <PropertyGroup Label="UserMacros" />
+
+  <PropertyGroup>
+    <OutDir>$(PREMSDKBUILDPATH)\</OutDir>
+    <IntDir>$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>PriceTicker</TargetName>
+    <TargetExt>.aex</TargetExt>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)..;$(PREMIERE_SDK_PATH)\Examples\Headers;$(PREMIERE_SDK_PATH)\Examples\Headers\SP;$(PREMIERE_SDK_PATH)\Examples\Utils;$(AE_SDK_BASE_PATH)\Examples\Headers;$(AE_SDK_BASE_PATH)\Examples\Headers\SP;$(AE_SDK_BASE_PATH)\Examples\Util;$(AE_SDK_BASE_PATH)\Examples\Resources;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>MSWindows;_USE_MATH_DEFINES;_WINDOWS;NOMINMAX;WIN32;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <SuppressStartupBanner>true</SuppressStartupBanner>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>PRWIN_ENV;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <Culture>0x0409</Culture>
+      <AdditionalIncludeDirectories>$(AE_SDK_BASE_PATH)\Examples\Headers;$(AE_SDK_BASE_PATH)\Examples\Resources;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Link>
+      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;ole32.lib;comdlg32.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
+      <SuppressStartupBanner>true</SuppressStartupBanner>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <ImportLibrary>$(IntDir)$(TargetName).lib</ImportLibrary>
+      <TargetMachine>MachineX64</TargetMachine>
+    </Link>
+    <PreBuildEvent>
+      <Command>if not defined AE_SDK_BASE_PATH echo "ERROR: AE_SDK_BASE_PATH is not defined! Download the After Effects SDK and set AE_SDK_BASE_PATH to its root (the folder whose Examples\Headers contains AE_Effect.h)."</Command>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClInclude Include="..\PriceTicker.h" />
+    <ClInclude Include="..\CardData.h" />
+    <ClInclude Include="..\TextRenderer.h" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClCompile Include="..\PriceTicker.cpp" />
+    <ClCompile Include="..\CardData.cpp" />
+    <ClCompile Include="..\TextRenderer.cpp" />
+    <ClCompile Include="$(PREMIERE_SDK_PATH)\Examples\Utils\MissingSuiteError.cpp" />
+  </ItemGroup>
+
+  <!-- Convert the PiPL (.r) into a .rcp that PriceTicker.rc includes. Requires
+       the After Effects SDK (PiPLTool.exe + AE resource headers). -->
+  <ItemGroup>
+    <CustomBuild Include="..\PriceTicker.r">
+      <Message>Converting PiPL for %(Filename)</Message>
+      <Command>cl /D "PRWIN_ENV" /I "$(AE_SDK_BASE_PATH)\Examples\Headers" /I "$(AE_SDK_BASE_PATH)\Examples\Resources" /EP "..\%(Filename).r" &gt; "$(IntDir)%(Filename).rr"
+"$(AE_SDK_BASE_PATH)\Examples\Resources\PiPLTool" "$(IntDir)%(Filename).rr" "..\%(Filename).rcp"</Command>
+      <Outputs>$(IntDir)%(Filename).rr;..\%(Filename).rcp;%(Outputs)</Outputs>
+      <AdditionalInputs>%(AdditionalInputs)</AdditionalInputs>
+    </CustomBuild>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ResourceCompile Include="..\PriceTicker.rc" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

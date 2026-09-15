@@ -1,0 +1,485 @@
+#include "PriceTicker.h"
+
+#define NOMINMAX
+#include <windows.h>
+#include <commdlg.h>
+
+#include "TextRenderer.h"
+
+#include <cmath>
+#include <cstring>
+#include <string>
+
+/* Font family names, in the same order as FONT_MENU_STR in PriceTicker.h.
+** The popup value is 1-based, so index with (value - 1). */
+static const wchar_t* const PT_kFontFamilies[FONT_COUNT] = {
+    L"Segoe UI", L"Arial", L"Arial Black", L"Verdana", L"Tahoma",
+    L"Times New Roman", L"Georgia", L"Trebuchet MS", L"Courier New",
+    L"Consolas", L"Impact", L"Comic Sans MS"
+};
+
+// Map a 1-based popup value to a font family name (clamped to the valid range).
+static const wchar_t* PT_FontFamilyFromPopup(A_long value)
+{
+    int idx = (int)value - 1;
+    if (idx < 0 || idx >= FONT_COUNT) idx = FONT_DFLT - 1;
+    return PT_kFontFamilies[idx];
+}
+
+/* ========================================================================= */
+/*  Sequence data helpers (the CSV store lives in the effect sequence data)   */
+/* ========================================================================= */
+
+// Lock the effect's sequence-data handle and return the store, or nullptr.
+static PT_CardStore* LockStore(PF_InData* in_data)
+{
+    if (!in_data->sequence_data) return nullptr;
+    return reinterpret_cast<PT_CardStore*>(PF_LOCK_HANDLE(in_data->sequence_data));
+}
+
+static void UnlockStore(PF_InData* in_data)
+{
+    if (in_data->sequence_data)
+        PF_UNLOCK_HANDLE(in_data->sequence_data);
+}
+
+static PF_Err SequenceSetup(PF_InData* in_data, PF_OutData* out_data)
+{
+    PF_Err err = PF_Err_NONE;
+
+    PF_Handle h = PF_NEW_HANDLE(sizeof(PT_CardStore));
+    if (!h) return PF_Err_OUT_OF_MEMORY;
+
+    PT_CardStore* store = reinterpret_cast<PT_CardStore*>(PF_LOCK_HANDLE(h));
+    if (store) {
+        PT_InitStore(store);
+        PF_UNLOCK_HANDLE(h);
+    }
+    out_data->sequence_data = h;
+    return err;
+}
+
+static PF_Err SequenceResetup(PF_InData* in_data, PF_OutData* out_data)
+{
+    // A fresh handle we own, seeded from whatever the host restored.
+    PF_Handle h = PF_NEW_HANDLE(sizeof(PT_CardStore));
+    if (!h) return PF_Err_OUT_OF_MEMORY;
+
+    PT_CardStore* dst = reinterpret_cast<PT_CardStore*>(PF_LOCK_HANDLE(h));
+    if (!dst) return PF_Err_OUT_OF_MEMORY;
+    PT_InitStore(dst);
+
+    if (in_data->sequence_data) {
+        PT_CardStore* src =
+            reinterpret_cast<PT_CardStore*>(PF_LOCK_HANDLE(in_data->sequence_data));
+        if (src && src->version == PT_CARDSTORE_VERSION) {
+            std::memcpy(dst, src, sizeof(PT_CardStore));
+        }
+        if (src) PF_UNLOCK_HANDLE(in_data->sequence_data);
+    }
+
+    // If the file is still on disk, refresh from it (picks up CSV edits).
+    if (dst->csvPath[0] != L'\0')
+        PT_ReloadStore(dst);
+
+    PF_UNLOCK_HANDLE(h);
+    out_data->sequence_data = h;
+    return PF_Err_NONE;
+}
+
+static PF_Err SequenceFlatten(PF_InData* in_data, PF_OutData* out_data)
+{
+    // Store is already POD/flat; hand the host an owned copy.
+    if (!in_data->sequence_data) return PF_Err_NONE;
+
+    PF_Handle h = PF_NEW_HANDLE(sizeof(PT_CardStore));
+    if (!h) return PF_Err_OUT_OF_MEMORY;
+
+    PT_CardStore* dst = reinterpret_cast<PT_CardStore*>(PF_LOCK_HANDLE(h));
+    PT_CardStore* src =
+        reinterpret_cast<PT_CardStore*>(PF_LOCK_HANDLE(in_data->sequence_data));
+    if (dst && src)
+        std::memcpy(dst, src, sizeof(PT_CardStore));
+    if (src) PF_UNLOCK_HANDLE(in_data->sequence_data);
+    if (dst) PF_UNLOCK_HANDLE(h);
+
+    out_data->sequence_data = h;
+    return PF_Err_NONE;
+}
+
+static PF_Err SequenceSetdown(PF_InData* in_data, PF_OutData* out_data)
+{
+    if (in_data->sequence_data)
+        PF_DISPOSE_HANDLE(in_data->sequence_data);
+    out_data->sequence_data = nullptr;
+    return PF_Err_NONE;
+}
+
+/* ========================================================================= */
+/*  Global setup / params                                                     */
+/* ========================================================================= */
+
+static PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data)
+{
+    out_data->my_version =
+        PF_VERSION(MAJOR_VERSION, MINOR_VERSION, BUG_VERSION, STAGE_VERSION, BUILD_VERSION);
+
+    // We keep the CSV in sequence data and want it saved with the project.
+    out_data->out_flags  |= PF_OutFlag_SEQUENCE_DATA_NEEDS_FLATTENING |
+                            PF_OutFlag_USE_OUTPUT_EXTENT;   // 0x10 | 0x40 = 0x50 (see .r)
+
+    if (in_data->appl_id == 'PrMr') {
+        // BGRA float lets us composite DirectWrite's premultiplied BGRA output
+        // with no color-space conversion.
+        AEFX_SuiteScoper<PF_PixelFormatSuite1> pixelFormatSuite(
+            in_data, kPFPixelFormatSuite, kPFPixelFormatSuiteVersion1, out_data);
+        (*pixelFormatSuite->ClearSupportedPixelFormats)(in_data->effect_ref);
+        (*pixelFormatSuite->AddSupportedPixelFormat)(
+            in_data->effect_ref, PrPixelFormat_BGRA_4444_32f);
+    }
+
+    return PF_Err_NONE;
+}
+
+static PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
+{
+    PF_ParamDef def;
+
+    // 1) Choose CSV button
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_BUTTON("Card List", "Choose CSV\xE2\x80\xA6",
+                  0, PF_ParamFlag_SUPERVISE, CHOOSE_CSV_DISK_ID);
+
+    // 2) Choose Markers button: load the exported timeline markers. Marker times
+    //    drive the reveal schedule, so no keyframing is needed.
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_BUTTON("Reveal Markers", "Choose Markers\xE2\x80\xA6",
+                  0, PF_ParamFlag_SUPERVISE, CHOOSE_MARKERS_DISK_ID);
+
+    // 3) Marker Time Offset (seconds) - align sequence-time markers to clip start.
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Marker Time Offset (s)",
+                         OFFSET_MIN, OFFSET_MAX, -OFFSET_SLIDER, OFFSET_SLIDER,
+                         OFFSET_DFLT, PF_Precision_HUNDREDTHS, 0, 0,
+                         MARKER_OFFSET_DISK_ID);
+
+    // 4) Card Display Duration (frames)
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Card Display (frames)",
+                         DURATION_MIN, DURATION_MAX, DURATION_MIN, 120.0,
+                         DURATION_DFLT, PF_Precision_INTEGER, 0, 0,
+                         DURATION_DISK_ID);
+
+    // 5) Position X (% of width)
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Position X (%)",
+                         0.0, 100.0, 0.0, 100.0,
+                         POS_X_DFLT, PF_Precision_TENTHS, 0, 0,
+                         POS_X_DISK_ID);
+
+    // 6) Position Y (% of height)
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Position Y (%)",
+                         0.0, 100.0, 0.0, 100.0,
+                         POS_Y_DFLT, PF_Precision_TENTHS, 0, 0,
+                         POS_Y_DISK_ID);
+
+    // 7) Font family
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUP("Font", FONT_COUNT, FONT_DFLT, FONT_MENU_STR, FONT_DISK_ID);
+
+    // 8) Font Size (px)
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Font Size (px)",
+                         FONT_SIZE_MIN, FONT_SIZE_MAX, FONT_SIZE_MIN, 200.0,
+                         FONT_SIZE_DFLT, PF_Precision_INTEGER, 0, 0,
+                         FONT_SIZE_DISK_ID);
+
+    // 9) Text Color (the "Total: $X" line)
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_COLOR("Text Color", 255, 255, 255, TEXT_COLOR_DISK_ID);
+
+    // 10) Card Value Color (the "+$value  Name" reveal line)
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_COLOR("Card Value Color", 255, 205, 70, CARD_VALUE_COLOR_DISK_ID);
+
+    // 11) Show Card Value during reveal window
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX("Show Card Value", "", TRUE, 0, SHOW_CARD_VALUE_DISK_ID);
+
+    // 12) Show Card Name on the reveal line
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX("Show Card Name", "", TRUE, 0, SHOW_CARD_NAME_DISK_ID);
+
+    out_data->num_params = PT_NUM_PARAMS;
+    return PF_Err_NONE;
+}
+
+/* ========================================================================= */
+/*  Button handling: open a file dialog and load the CSV / markers            */
+/* ========================================================================= */
+
+static PF_Err UserChangedParam(
+    PF_InData*                    in_data,
+    PF_OutData*                   out_data,
+    PF_ParamDef*                  params[],
+    const PF_UserChangedParamExtra* extra)
+{
+    bool isCsv     = (extra->param_index == PT_CHOOSE_CSV);
+    bool isMarkers = (extra->param_index == PT_CHOOSE_MARKERS);
+    if (!isCsv && !isMarkers)
+        return PF_Err_NONE;
+
+    wchar_t fileBuf[PT_MAX_PATH_LEN];
+    fileBuf[0] = L'\0';
+
+    OPENFILENAMEW ofn;
+    std::memset(&ofn, 0, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = GetActiveWindow();
+    ofn.lpstrFilter = L"CSV Files\0*.csv\0All Files\0*.*\0";
+    ofn.lpstrFile   = fileBuf;
+    ofn.nMaxFile    = PT_MAX_PATH_LEN;
+    ofn.lpstrTitle  = isCsv ? L"Select card price CSV"
+                            : L"Select exported markers file";
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+
+    if (!GetOpenFileNameW(&ofn))
+        return PF_Err_NONE;                 // user cancelled
+
+    PT_CardStore* store = LockStore(in_data);
+    if (store) {
+        if (isCsv) PT_LoadCardsFromCsv(fileBuf, store);
+        else       PT_LoadMarkersFromCsv(fileBuf, store);
+        UnlockStore(in_data);
+        out_data->out_flags |= PF_OutFlag_FORCE_RERENDER | PF_OutFlag_REFRESH_UI;
+    }
+    return PF_Err_NONE;
+}
+
+/* ========================================================================= */
+/*  Render                                                                    */
+/* ========================================================================= */
+
+// Composite a premultiplied-BGRA text bitmap over a BGRA_4444_32f frame.
+static void CompositeText(PF_LayerDef* dest, const PT_TextBitmap* txt,
+                          int topLeftX, int topLeftY)
+{
+    for (int ty = 0; ty < txt->height; ++ty) {
+        int fy = topLeftY + ty;
+        if (fy < 0 || fy >= dest->height) continue;
+
+        const unsigned char* srcRow = txt->pixels + (size_t)ty * txt->width * 4;
+        float* dstRow = (float*)((char*)dest->data + (size_t)fy * dest->rowbytes);
+
+        for (int tx = 0; tx < txt->width; ++tx) {
+            int fx = topLeftX + tx;
+            if (fx < 0 || fx >= dest->width) continue;
+
+            const unsigned char* s = srcRow + tx * 4;   // B,G,R,A (premultiplied)
+            float tb = s[0] / 255.0f;
+            float tg = s[1] / 255.0f;
+            float tr = s[2] / 255.0f;
+            float ta = s[3] / 255.0f;
+            if (ta <= 0.0f) continue;                   // nothing to draw
+
+            float* d = dstRow + fx * 4;                 // B,G,R,A float
+            float inv = 1.0f - ta;
+            d[0] = tb + d[0] * inv;
+            d[1] = tg + d[1] * inv;
+            d[2] = tr + d[2] * inv;
+            d[3] = ta + d[3] * inv;
+        }
+    }
+}
+
+// Rasterize one UTF-8 line in color (r,g,b) and composite it so the text's
+// top-left ink lands at (inkX, inkY) pixels. Returns the line's ink height so
+// the caller can stack the next line directly below it; 0 on empty/failure.
+static float DrawLine(PF_LayerDef* output, const std::string& utf8,
+                      const wchar_t* fontFamily, float fontPx,
+                      float r, float g, float b,
+                      float inkX, float inkY)
+{
+    if (utf8.empty()) return 0.0f;
+
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+    if (wlen <= 1) return 0.0f;
+
+    std::wstring wtext(wlen, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &wtext[0], wlen);
+
+    PT_TextBitmap bmp = {};
+    if (!PT_RenderText(wtext.c_str(), fontFamily, fontPx, r, g, b, 1.0f, &bmp))
+        return 0.0f;
+
+    int topLeftX = (int)std::floor(inkX + 0.5f) - bmp.originX;
+    int topLeftY = (int)std::floor(inkY + 0.5f) - bmp.originY;
+    CompositeText(output, &bmp, topLeftX, topLeftY);
+
+    float inkH = (float)(bmp.height - 2 * bmp.originY);   // one line's height
+    PT_FreeTextBitmap(&bmp);
+    return inkH;
+}
+
+static PF_Err Render(
+    PF_InData*   in_data,
+    PF_OutData*  out_data,
+    PF_ParamDef* params[],
+    PF_LayerDef* output)
+{
+    PF_Err err = PF_Err_NONE;
+
+    // Non-Premiere hosts: just pass the frame through unchanged.
+    if (in_data->appl_id != 'PrMr') {
+        return PF_COPY(&params[PT_INPUT]->u.ld, output, NULL, NULL);
+    }
+
+    PF_LayerDef* src = &params[PT_INPUT]->u.ld;
+
+    // Start with a straight copy of the source frame.
+    {
+        const char* srcData = (const char*)src->data;
+        char* destData = (char*)output->data;
+        size_t rowCopy = (size_t)output->width * 4 * sizeof(float);
+        for (int y = 0; y < output->height; ++y,
+             srcData += src->rowbytes, destData += output->rowbytes) {
+            std::memcpy(destData, srcData, rowCopy);
+        }
+    }
+
+    // --- Read parameters ---------------------------------------------------
+    double offsetSec   = params[PT_MARKER_OFFSET]->u.fs_d.value;
+    float durationF    = (float)params[PT_DURATION]->u.fs_d.value;
+    float posXpct      = (float)params[PT_POS_X]->u.fs_d.value;
+    float posYpct      = (float)params[PT_POS_Y]->u.fs_d.value;
+    float fontSizeBase = (float)params[PT_FONT_SIZE]->u.fs_d.value;
+    bool  showCard     = params[PT_SHOW_CARD_VALUE]->u.bd.value != 0;
+    bool  showCardName = params[PT_SHOW_CARD_NAME]->u.bd.value != 0;
+
+    const wchar_t* fontFamily = PT_FontFamilyFromPopup(params[PT_FONT]->u.pd.value);
+
+    PF_Pixel color = params[PT_TEXT_COLOR]->u.cd.value;
+    float cr = color.red   / 255.0f;
+    float cg = color.green / 255.0f;
+    float cb = color.blue  / 255.0f;
+
+    PF_Pixel vcolor = params[PT_CARD_VALUE_COLOR]->u.cd.value;   // reveal line
+    float vr = vcolor.red   / 255.0f;
+    float vg = vcolor.green / 255.0f;
+    float vb = vcolor.blue  / 255.0f;
+
+    // Scale font to the current (possibly reduced) preview resolution.
+    float dsy = (in_data->downsample_y.den != 0)
+                ? (float)in_data->downsample_y.num / in_data->downsample_y.den : 1.0f;
+    float fontPx = fontSizeBase * dsy;
+    if (fontPx < 1.0f) fontPx = 1.0f;
+
+    // --- Total from the marker schedule up to this frame -------------------
+    // current_time is in units where time_scale == units/second; time_step is
+    // one frame. Convert both to seconds to match the (seconds-based) schedule.
+    double nowSec = (in_data->time_scale != 0)
+                    ? (double)in_data->current_time / (double)in_data->time_scale
+                    : 0.0;
+    double fps = (in_data->time_step != 0)
+                 ? (double)in_data->time_scale / (double)in_data->time_step
+                 : 0.0;
+
+    PT_CardStore* store = LockStore(in_data);
+
+    int    curIdx = -1;
+    double total  = PT_TotalAtSeconds(store, nowSec, fps, offsetSec, &curIdx);
+
+    // --- Build the two overlay lines (UTF-8) -------------------------------
+    char totalStr[64];
+    PT_FormatCurrency(total, totalStr, sizeof(totalStr));
+
+    std::string totalLine = "Total: ";
+    totalLine += totalStr;
+
+    // Flash the most-recently-revealed card's "+value[  Name]" for 'durationF'
+    // frames after its marker time.
+    std::string cardLine;
+    if (showCard && store && curIdx >= 0) {
+        const PT_Reveal* rv = &store->reveals[curIdx];
+        double framesSince = (nowSec - PT_RevealSeconds(rv, fps, offsetSec)) * fps;
+        if (framesSince < (double)durationF) {
+            char valStr[64];
+            PT_FormatCurrency(rv->price, valStr, sizeof(valStr));
+            cardLine = "+";
+            cardLine += valStr;
+            if (showCardName) {
+                cardLine += "  ";
+                cardLine += rv->name;
+                if (!rv->matched)
+                    cardLine += "  (?)";   // marker name didn't match any card
+            }
+        }
+    }
+
+    if (store) UnlockStore(in_data);
+
+    // --- Rasterize + composite each line in its own color ------------------
+    // Anchor the top-left ink at (posX, posY); the total line stays put and the
+    // reveal line stacks directly beneath it in its own color.
+    float inkX = posXpct / 100.0f * output->width;
+    float inkY = posYpct / 100.0f * output->height;
+
+    float totalH = DrawLine(output, totalLine, fontFamily, fontPx,
+                            cr, cg, cb, inkX, inkY);
+    DrawLine(output, cardLine, fontFamily, fontPx,
+             vr, vg, vb, inkX, inkY + totalH);
+
+    return err;
+}
+
+/* ========================================================================= */
+/*  Entry point                                                               */
+/* ========================================================================= */
+
+extern "C" DllExport PF_Err EffectMain(
+    PF_Cmd       inCmd,
+    PF_InData*   in_data,
+    PF_OutData*  out_data,
+    PF_ParamDef* params[],
+    PF_LayerDef* inOutput,
+    void*        extra)
+{
+    PF_Err err = PF_Err_NONE;
+
+    try {
+        switch (inCmd) {
+        case PF_Cmd_GLOBAL_SETUP:
+            err = GlobalSetup(in_data, out_data);
+            break;
+        case PF_Cmd_PARAMS_SETUP:
+            err = ParamsSetup(in_data, out_data);
+            break;
+        case PF_Cmd_SEQUENCE_SETUP:
+            err = SequenceSetup(in_data, out_data);
+            break;
+        case PF_Cmd_SEQUENCE_RESETUP:
+            err = SequenceResetup(in_data, out_data);
+            break;
+        case PF_Cmd_SEQUENCE_FLATTEN:
+            err = SequenceFlatten(in_data, out_data);
+            break;
+        case PF_Cmd_SEQUENCE_SETDOWN:
+            err = SequenceSetdown(in_data, out_data);
+            break;
+        case PF_Cmd_USER_CHANGED_PARAM:
+            err = UserChangedParam(in_data, out_data, params,
+                                   reinterpret_cast<const PF_UserChangedParamExtra*>(extra));
+            break;
+        case PF_Cmd_RENDER:
+            err = Render(in_data, out_data, params, inOutput);
+            break;
+        }
+    } catch (PF_Err& thrown) {
+        err = thrown;
+    } catch (...) {
+        err = PF_Err_INTERNAL_STRUCT_DAMAGED;
+    }
+
+    return err;
+}

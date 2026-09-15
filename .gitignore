@@ -1,0 +1,18 @@
+# Build output
+_build/
+Win/x64/
+*.aex
+*.exp
+*.ilk
+*.pdb
+*.lib
+*.obj
+*.rr
+
+# Generated PiPL resource (produced by PiPLTool during the build)
+PriceTicker.rcp
+
+# VS user/junk
+.vs/
+*.user
+*.suo
