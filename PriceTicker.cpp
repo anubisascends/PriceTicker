@@ -3,11 +3,14 @@
 #define NOMINMAX
 #include <windows.h>
 #include <commdlg.h>
+#include <mmsystem.h>          // PlaySoundW (preview audio cue)
+#pragma comment(lib, "winmm.lib")
 
 #include "TextRenderer.h"
 
 #include <cmath>
 #include <cstring>
+#include <cwchar>
 #include <string>
 
 /* Font family names, in the same order as FONT_MENU_STR in PriceTicker.h.
@@ -211,6 +214,61 @@ static PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     AEFX_CLR_STRUCT(def);
     PF_ADD_CHECKBOX("Show Card Name", "", TRUE, 0, SHOW_CARD_NAME_DISK_ID);
 
+    // 13) Enable Price Thresholds — color the reveal line by the card's price band.
+    //     When off, the single "Card Value Color" above is used (as before).
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX("Price Thresholds", "", TRUE, 0, ENABLE_THRESHOLDS_DISK_ID);
+
+    // 14) Low band upper bound (price <= this -> Low)
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Low if price \xE2\x89\xA4 ($)",
+                         THRESH_MIN, THRESH_MAX, THRESH_MIN, THRESH_SLIDER_MAX,
+                         THRESH_LOW_DFLT, PF_Precision_HUNDREDTHS, 0, 0,
+                         THRESH_LOW_MAX_DISK_ID);
+
+    // 15) Medium band upper bound (price <= this -> Medium; above -> High)
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Medium if price \xE2\x89\xA4 ($)",
+                         THRESH_MIN, THRESH_MAX, THRESH_MIN, THRESH_SLIDER_MAX,
+                         THRESH_MED_DFLT, PF_Precision_HUNDREDTHS, 0, 0,
+                         THRESH_MED_MAX_DISK_ID);
+
+    // 16) Low band color
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_COLOR("Low Color", 150, 150, 150, COLOR_LOW_DISK_ID);
+
+    // 17) Medium band color
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_COLOR("Medium Color", 255, 205, 70, COLOR_MED_DISK_ID);
+
+    // 18) High band color
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_COLOR("High Color", 90, 235, 120, COLOR_HIGH_DISK_ID);
+
+    // 19) Subtract marker color (the "-$amount" reveal line)
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_COLOR("Subtract Color", 240, 90, 90, SUBTRACT_COLOR_DISK_ID);
+
+    // 20) Enable preview sound — plays a WAV cue on reveal during interactive
+    //     editing only (never reaches the export; turn OFF before exporting).
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX("Preview Sound", "", TRUE, 0, ENABLE_SOUND_DISK_ID);
+
+    // 21) Choose the Low-band reveal sound
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_BUTTON("Low Sound", "Choose WAV\xE2\x80\xA6",
+                  0, PF_ParamFlag_SUPERVISE, CHOOSE_SOUND_LOW_DISK_ID);
+
+    // 22) Choose the Medium-band reveal sound
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_BUTTON("Medium Sound", "Choose WAV\xE2\x80\xA6",
+                  0, PF_ParamFlag_SUPERVISE, CHOOSE_SOUND_MED_DISK_ID);
+
+    // 23) Choose the High-band reveal sound
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_BUTTON("High Sound", "Choose WAV\xE2\x80\xA6",
+                  0, PF_ParamFlag_SUPERVISE, CHOOSE_SOUND_HIGH_DISK_ID);
+
     out_data->num_params = PT_NUM_PARAMS;
     return PF_Err_NONE;
 }
@@ -225,9 +283,14 @@ static PF_Err UserChangedParam(
     PF_ParamDef*                  params[],
     const PF_UserChangedParamExtra* extra)
 {
-    bool isCsv     = (extra->param_index == PT_CHOOSE_CSV);
-    bool isMarkers = (extra->param_index == PT_CHOOSE_MARKERS);
-    if (!isCsv && !isMarkers)
+    const A_long idx = extra->param_index;
+    bool isCsv       = (idx == PT_CHOOSE_CSV);
+    bool isMarkers   = (idx == PT_CHOOSE_MARKERS);
+    bool isSoundLow  = (idx == PT_CHOOSE_SOUND_LOW);
+    bool isSoundMed  = (idx == PT_CHOOSE_SOUND_MED);
+    bool isSoundHigh = (idx == PT_CHOOSE_SOUND_HIGH);
+    bool isSound     = isSoundLow || isSoundMed || isSoundHigh;
+    if (!isCsv && !isMarkers && !isSound)
         return PF_Err_NONE;
 
     wchar_t fileBuf[PT_MAX_PATH_LEN];
@@ -237,11 +300,15 @@ static PF_Err UserChangedParam(
     std::memset(&ofn, 0, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner   = GetActiveWindow();
-    ofn.lpstrFilter = L"CSV Files\0*.csv\0All Files\0*.*\0";
+    ofn.lpstrFilter = isSound ? L"WAV Audio\0*.wav\0All Files\0*.*\0"
+                              : L"CSV Files\0*.csv\0All Files\0*.*\0";
     ofn.lpstrFile   = fileBuf;
     ofn.nMaxFile    = PT_MAX_PATH_LEN;
-    ofn.lpstrTitle  = isCsv ? L"Select card price CSV"
-                            : L"Select exported markers file";
+    ofn.lpstrTitle  = isCsv     ? L"Select card price CSV"
+                    : isMarkers ? L"Select exported markers file"
+                    : isSoundLow  ? L"Select WAV for Low-band reveals"
+                    : isSoundMed  ? L"Select WAV for Medium-band reveals"
+                                  : L"Select WAV for High-band reveals";
     ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
 
     if (!GetOpenFileNameW(&ofn))
@@ -249,8 +316,16 @@ static PF_Err UserChangedParam(
 
     PT_CardStore* store = LockStore(in_data);
     if (store) {
-        if (isCsv) PT_LoadCardsFromCsv(fileBuf, store);
-        else       PT_LoadMarkersFromCsv(fileBuf, store);
+        if (isCsv)              PT_LoadCardsFromCsv(fileBuf, store);
+        else if (isMarkers)     PT_LoadMarkersFromCsv(fileBuf, store);
+        else {
+            // Record the chosen sound path in the (persisted) store.
+            wchar_t* dst = isSoundLow ? store->soundLowPath
+                         : isSoundMed ? store->soundMedPath
+                                      : store->soundHighPath;
+            std::wcsncpy(dst, fileBuf, PT_MAX_PATH_LEN - 1);
+            dst[PT_MAX_PATH_LEN - 1] = L'\0';
+        }
         UnlockStore(in_data);
         out_data->out_flags |= PF_OutFlag_FORCE_RERENDER | PF_OutFlag_REFRESH_UI;
     }
@@ -322,6 +397,36 @@ static float DrawLine(PF_LayerDef* output, const std::string& utf8,
     return inkH;
 }
 
+// Price band for a card: 0 = Low (price <= lowMax), 1 = Medium (<= medMax),
+// 2 = High (above medMax). Boundaries are inclusive of the band's upper bound.
+static int PT_BandForPrice(double price, double lowMax, double medMax)
+{
+    if (price <= lowMax) return 0;
+    if (price <= medMax) return 1;
+    return 2;
+}
+
+// Best-effort preview cue: play 'path' asynchronously through the Windows audio
+// device. INTERACTIVE ONLY by nature — a Premiere video effect has no audio
+// output path, so this cannot reach the export; it just gives the editor an
+// audible marker while scrubbing/previewing. Debounced so repeated renders of
+// the same reveal (scrub jitter, re-renders of one frame) don't machine-gun it.
+static void PT_PlayRevealCue(const wchar_t* path, int revealIdx)
+{
+    static int   s_lastIdx  = -1;
+    static DWORD s_lastTick = 0;
+
+    if (!path || path[0] == L'\0') return;
+
+    DWORD now = GetTickCount();
+    if (revealIdx == s_lastIdx && (now - s_lastTick) < 750)
+        return;                             // same reveal, too soon -> skip
+
+    s_lastIdx  = revealIdx;
+    s_lastTick = now;
+    PlaySoundW(path, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+}
+
 static PF_Err Render(
     PF_InData*   in_data,
     PF_OutData*  out_data,
@@ -364,10 +469,25 @@ static PF_Err Render(
     float cg = color.green / 255.0f;
     float cb = color.blue  / 255.0f;
 
+    // Reveal-line color: defaults to the single Card Value Color, overridden
+    // per-reveal below by the price-threshold band or the subtract color.
     PF_Pixel vcolor = params[PT_CARD_VALUE_COLOR]->u.cd.value;   // reveal line
     float vr = vcolor.red   / 255.0f;
     float vg = vcolor.green / 255.0f;
     float vb = vcolor.blue  / 255.0f;
+
+    // v4: thresholds, per-band colors/sounds, subtract color.
+    bool   enableThresholds = params[PT_ENABLE_THRESHOLDS]->u.bd.value != 0;
+    bool   enableSound      = params[PT_ENABLE_SOUND]->u.bd.value != 0;
+    double lowMax           = params[PT_THRESH_LOW_MAX]->u.fs_d.value;
+    double medMax           = params[PT_THRESH_MED_MAX]->u.fs_d.value;
+
+    PF_Pixel bandCol[3] = {
+        params[PT_COLOR_LOW]->u.cd.value,
+        params[PT_COLOR_MED]->u.cd.value,
+        params[PT_COLOR_HIGH]->u.cd.value,
+    };
+    PF_Pixel subCol = params[PT_SUBTRACT_COLOR]->u.cd.value;
 
     // Scale font to the current (possibly reduced) preview resolution.
     float dsy = (in_data->downsample_y.den != 0)
@@ -397,27 +517,73 @@ static PF_Err Render(
     std::string totalLine = "Total: ";
     totalLine += totalStr;
 
-    // Flash the most-recently-revealed card's "+value[  Name]" for 'durationF'
-    // frames after its marker time.
+    // Flash the most-recently-revealed reveal's line for 'durationF' frames after
+    // its marker time. A card reveal shows "+value[  Name]" colored by its price
+    // band (or the single Card Value Color when thresholds are off); a subtract
+    // reveal shows "-amount" in the subtract color. Also arm the preview cue.
     std::string cardLine;
-    if (showCard && store && curIdx >= 0) {
+    wchar_t     cuePath[PT_MAX_PATH_LEN];
+    cuePath[0] = L'\0';
+    int  cueIdx  = -1;
+    bool wantCue = false;
+
+    if (store && curIdx >= 0) {
         const PT_Reveal* rv = &store->reveals[curIdx];
         double framesSince = (nowSec - PT_RevealSeconds(rv, fps, offsetSec)) * fps;
-        if (framesSince < (double)durationF) {
+        bool   inWindow    = framesSince < (double)durationF;
+
+        int band = (rv->kind == PT_REVEAL_CARD)
+                   ? PT_BandForPrice(rv->price, lowMax, medMax) : 0;
+
+        // Pick the reveal-line color for this reveal.
+        if (rv->kind == PT_REVEAL_SUBTRACT) {
+            vr = subCol.red / 255.0f; vg = subCol.green / 255.0f; vb = subCol.blue / 255.0f;
+        } else if (enableThresholds) {
+            const PF_Pixel& c = bandCol[band];
+            vr = c.red / 255.0f; vg = c.green / 255.0f; vb = c.blue / 255.0f;
+        }
+
+        if (showCard && inWindow) {
             char valStr[64];
-            PT_FormatCurrency(rv->price, valStr, sizeof(valStr));
-            cardLine = "+";
-            cardLine += valStr;
-            if (showCardName) {
-                cardLine += "  ";
-                cardLine += rv->name;
-                if (!rv->matched)
-                    cardLine += "  (?)";   // marker name didn't match any card
+            if (rv->kind == PT_REVEAL_SUBTRACT) {
+                // price is stored negative; show the positive amount with a "-".
+                PT_FormatCurrency(-rv->price, valStr, sizeof(valStr));
+                cardLine = "-";
+                cardLine += valStr;
+            } else {
+                PT_FormatCurrency(rv->price, valStr, sizeof(valStr));
+                cardLine = "+";
+                cardLine += valStr;
+                if (showCardName) {
+                    cardLine += "  ";
+                    cardLine += rv->name;
+                    if (!rv->matched)
+                        cardLine += "  (?)";   // marker name didn't match any card
+                }
+            }
+        }
+
+        // Arm the preview cue for a *card* reveal at its onset (~1 frame window).
+        // Copy the band's WAV path out while the store is still locked.
+        if (enableSound && rv->kind == PT_REVEAL_CARD &&
+            framesSince >= 0.0 && framesSince < 1.5) {
+            const wchar_t* p = (band == 0) ? store->soundLowPath
+                             : (band == 1) ? store->soundMedPath
+                                           : store->soundHighPath;
+            if (p[0] != L'\0') {
+                std::wcsncpy(cuePath, p, PT_MAX_PATH_LEN - 1);
+                cuePath[PT_MAX_PATH_LEN - 1] = L'\0';
+                cueIdx  = curIdx;
+                wantCue = true;
             }
         }
     }
 
     if (store) UnlockStore(in_data);
+
+    // Fire the preview cue after unlocking (interactive editing only; see helper).
+    if (wantCue)
+        PT_PlayRevealCue(cuePath, cueIdx);
 
     // --- Rasterize + composite each line in its own color ------------------
     // Anchor the top-left ink at (posX, posY); the total line stays put and the

@@ -116,9 +116,16 @@ Price Ticker**.
 | **Font** | Font family used to render the overlay (choose from common Windows fonts). |
 | **Font Size (px)** | Font size at full resolution (auto-scaled in reduced-res previews). |
 | **Text Color** | Fill color of the **Total: $X** line (drop shadow added for legibility). |
-| **Card Value Color** | Fill color of the **+$value  Name** reveal line, so it can differ from the total. |
+| **Card Value Color** | Fill color of the **+$value  Name** reveal line when **Price Thresholds** is off. |
 | **Show Card Value** | When on, shows the `+$value…` reveal line for *Card Display* frames after each reveal. |
 | **Show Card Name** | When on, the reveal line includes the card name (`+$value  Name`); when off, just `+$value`. |
+| **Price Thresholds** | When on, the reveal line is colored by the revealed card's price band instead of the single *Card Value Color*. |
+| **Low if price ≤ ($)** | Upper bound of the **Low** band. A card priced at/below this uses **Low Color**. |
+| **Medium if price ≤ ($)** | Upper bound of the **Medium** band. At/below → **Medium Color**; above → **High Color**. |
+| **Low / Medium / High Color** | Reveal-line fill for each price band (used when *Price Thresholds* is on). |
+| **Subtract Color** | Reveal-line fill for a `[subtract]` marker's `-$amount` line. |
+| **Preview Sound** | When on, plays the band's WAV as an **editing-only** cue as playback crosses a card reveal. **Not in the export — turn this off before exporting.** |
+| **Low / Medium / High Sound → Choose WAV…** | Optional WAV played when a card in that band reveals. Empty = silent. |
 
 ### File formats
 
@@ -145,15 +152,51 @@ Black Lotus,,00:00:05:13,00:00:05:13,00:00:00:00,Comment
 *Simple* (`export_markers.jsx`, see `sample_markers.csv`):
 
 ```
-Name,Seconds
-Black Lotus,5.5
+Name,Comment,Seconds
+Black Lotus,,5.5
 ```
+
+(The older two-column `Name,Seconds` form still loads.)
 
 Time values may be plain seconds (`5`, `5.5`), `H:M:S(.f)` (`00:00:05.5`), or an
 `HH:MM:SS:FF` timecode (`00:00:05:13`); timecode frames are converted using the
 sequence frame rate at render time.
 
 Limits: up to 512 cards and 512 markers, names up to 63 bytes (UTF-8).
+
+### Subtract markers
+
+To **subtract** a fixed amount from the running total at a point in the timeline,
+add a marker named **`[subtract]`** (case-insensitive) and put the amount in the
+marker's **comment**. At that marker's time the effect subtracts the amount and
+flashes `-$amount` in the **Subtract Color** (no sound is played for a subtract).
+
+```
+Name,Comment,Seconds
+[subtract],1.00,42.0        # at 42s, subtract $1.00 from the total
+```
+
+In a Premiere *Export Markers* CSV the same marker appears as
+`[subtract],1.00,00:00:42:00,...` — the amount is the `Description` column and the
+time is the `In` timecode.
+
+### Price thresholds & preview sounds
+
+Turn on **Price Thresholds** to color the reveal line by the revealed card's
+price: at/below **Low if price ≤** uses **Low Color**, at/below **Medium if
+price ≤** uses **Medium Color**, and anything higher uses **High Color**. With
+thresholds off, the reveal line uses the single **Card Value Color** as before.
+
+Each band can also have an optional **preview sound**: pick a WAV for Low/Medium/
+High and, with **Preview Sound** on, the matching clip plays as playback crosses a
+card in that band.
+
+> **Audio is a preview cue only.** A Premiere *video* effect has no audio output
+> path — it can't write sound into the mixed/exported audio (the same limitation
+> that forces the markers-*file* design). The WAV plays through the editing
+> machine's speakers while you scrub/preview; it will **not** be in your exported
+> video, and it may make noise during an on-machine export, so **turn Preview
+> Sound off before exporting** (or use a proper audio track for the final mix).
 
 ---
 

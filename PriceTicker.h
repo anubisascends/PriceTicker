@@ -60,8 +60,22 @@ enum {
     PT_FONT_SIZE,         // float slider: font size in px (at full resolution)
     PT_TEXT_COLOR,        // color: fill color of the "Total: $X" line
     PT_CARD_VALUE_COLOR,  // color: fill color of the "+$value  Name" reveal line
+                          //   (used when Price Thresholds are OFF)
     PT_SHOW_CARD_VALUE,   // checkbox: show the "+$value  Name" line during reveal window
     PT_SHOW_CARD_NAME,    // checkbox: include the card name on that line (else "+$value")
+
+    /* --- v4: price thresholds, per-band sounds, subtract markers ----------- */
+    PT_ENABLE_THRESHOLDS, // checkbox: color the reveal line by the card's price band
+    PT_THRESH_LOW_MAX,    // float: price <= this  -> Low band
+    PT_THRESH_MED_MAX,    // float: price <= this  -> Medium band; above -> High band
+    PT_COLOR_LOW,         // color: reveal-line fill for a Low-band card
+    PT_COLOR_MED,         // color: reveal-line fill for a Medium-band card
+    PT_COLOR_HIGH,        // color: reveal-line fill for a High-band card
+    PT_SUBTRACT_COLOR,    // color: reveal-line fill for a [subtract] marker
+    PT_ENABLE_SOUND,      // checkbox: play a preview cue on reveal (interactive only)
+    PT_CHOOSE_SOUND_LOW,  // button: pick the WAV played when a Low-band card reveals
+    PT_CHOOSE_SOUND_MED,  // button: pick the WAV played when a Medium-band card reveals
+    PT_CHOOSE_SOUND_HIGH, // button: pick the WAV played when a High-band card reveals
     PT_NUM_PARAMS
 };
 
@@ -78,7 +92,19 @@ enum {
     TEXT_COLOR_DISK_ID,
     SHOW_CARD_VALUE_DISK_ID,
     CARD_VALUE_COLOR_DISK_ID,
-    SHOW_CARD_NAME_DISK_ID
+    SHOW_CARD_NAME_DISK_ID,
+    /* v4 additions — append only; never reorder/reuse the IDs above. */
+    ENABLE_THRESHOLDS_DISK_ID,
+    THRESH_LOW_MAX_DISK_ID,
+    THRESH_MED_MAX_DISK_ID,
+    COLOR_LOW_DISK_ID,
+    COLOR_MED_DISK_ID,
+    COLOR_HIGH_DISK_ID,
+    SUBTRACT_COLOR_DISK_ID,
+    ENABLE_SOUND_DISK_ID,
+    CHOOSE_SOUND_LOW_DISK_ID,
+    CHOOSE_SOUND_MED_DISK_ID,
+    CHOOSE_SOUND_HIGH_DISK_ID
 };
 
 /* Parameter ranges / defaults --------------------------------------------- */
@@ -101,6 +127,15 @@ enum {
 #define FONT_SIZE_MIN     8.0
 #define FONT_SIZE_MAX     400.0
 #define FONT_SIZE_DFLT    72.0
+
+/* Price-threshold band boundaries (in dollars). A card whose price is
+** <= LOW_MAX is "Low", <= MED_MAX is "Medium", otherwise "High". Wide max so
+** high-value cards (e.g. a $25,000 Black Lotus) still fit; type past the slider. */
+#define THRESH_MIN         0.0
+#define THRESH_MAX         1000000.0
+#define THRESH_SLIDER_MAX  100.0     // soft slider extent; type beyond it
+#define THRESH_LOW_DFLT    1.00
+#define THRESH_MED_DFLT    10.00
 
 /* Font popup. The menu string order MUST match PT_kFontFamilies[] in the .cpp.
 ** All families ship with Windows; DirectWrite falls back gracefully if one is

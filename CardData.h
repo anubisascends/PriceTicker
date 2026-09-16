@@ -18,7 +18,14 @@
 #define PT_MAX_MARKERS    512
 #define PT_MAX_NAME       64      // bytes, UTF-8, incl. null terminator
 #define PT_MAX_PATH_LEN   1024    // wchar_t count, incl. null terminator
-#define PT_CARDSTORE_VERSION  3   // v3: reveal stores a frame remainder for timecode
+#define PT_CARDSTORE_VERSION  4   // v4: reveal 'kind' (card/subtract) + per-band sound paths
+
+// Reveal kinds. A "card" reveal adds a card's price to the running total; a
+// "subtract" reveal (marker named "[subtract]", amount in its comment) subtracts
+// a fixed amount. Subtract reveals store the amount as a negative price so the
+// running-total math (PT_TotalAtSeconds) needs no special case.
+#define PT_REVEAL_CARD       0u
+#define PT_REVEAL_SUBTRACT   1u
 
 struct PT_Card {
     char   name[PT_MAX_NAME];
@@ -32,9 +39,11 @@ struct PT_Card {
 struct PT_Reveal {
     double   timeSec;           // whole seconds (H*3600 + M*60 + S)
     double   frames;            // frame remainder from a timecode (0 for plain seconds)
-    double   price;             // resolved from the card CSV (0 if unmatched)
-    char     name[PT_MAX_NAME]; // marker name (== card name)
-    uint32_t matched;           // 1 if name matched a card, else 0
+    double   price;             // card reveal: card price (0 if unmatched).
+                                // subtract reveal: NEGATIVE amount (e.g. -1.00)
+    char     name[PT_MAX_NAME]; // marker name (== card name; "[subtract]" for a subtract)
+    uint32_t matched;           // 1 if name matched a card (always 1 for subtract), else 0
+    uint32_t kind;              // PT_REVEAL_CARD or PT_REVEAL_SUBTRACT
 };
 
 // Flat, POD, self-contained: safe to memcpy into/out of a sequence-data handle.
@@ -44,6 +53,9 @@ struct PT_CardStore {
     uint32_t  markerCount;                   // valid entries in reveals[]
     wchar_t   csvPath[PT_MAX_PATH_LEN];      // card CSV, for reload after project load
     wchar_t   markersPath[PT_MAX_PATH_LEN];  // markers file, likewise
+    wchar_t   soundLowPath[PT_MAX_PATH_LEN]; // WAV played when a Low-band card reveals ("" = none)
+    wchar_t   soundMedPath[PT_MAX_PATH_LEN]; // WAV played when a Medium-band card reveals
+    wchar_t   soundHighPath[PT_MAX_PATH_LEN];// WAV played when a High-band card reveals
     PT_Card   cards[PT_MAX_CARDS];
     PT_Reveal reveals[PT_MAX_MARKERS];       // sorted ascending by timeSec
 };
@@ -68,6 +80,12 @@ bool PT_ReloadStore(PT_CardStore* store);
 // Accepts BOTH Premiere's native "Export Markers" CSV (columns
 // "Marker Name,Description,In,Out,..." with an HH:MM:SS:FF timecode in 'In') and
 // a simple "Name,Seconds" file. Quoted names containing commas are handled.
+//
+// Subtract markers: a marker named "[subtract]" (case-insensitive) subtracts a
+// fixed amount from the running total at its time. The amount is read from the
+// marker's comment/description (the first non-time field after the name that
+// parses as a number). Such a reveal is stored with kind == PT_REVEAL_SUBTRACT
+// and a negative price; it is never joined to a card.
 bool PT_LoadMarkersFromCsv(const wchar_t* path, PT_CardStore* store);
 
 // Effective reveal time in seconds, given the sequence frame rate and a

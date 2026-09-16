@@ -197,6 +197,13 @@ static bool pt_ieq(const char* a, const char* b)
     return *a == '\0' && *b == '\0';
 }
 
+// True if 'name' is the subtract directive "[subtract]" (case-insensitive).
+// 'name' is expected already trimmed of surrounding whitespace/quotes.
+static bool pt_is_subtract(const char* name)
+{
+    return pt_ieq(name, "[subtract]");
+}
+
 // Parse a time token into (whole seconds, extra frames). Accepts:
 //   plain seconds     "5", "5.5"              -> sec=value,          frames=0
 //   M:S               "1:05"                  -> sec=65,             frames=0
@@ -280,12 +287,30 @@ bool PT_LoadMarkersFromCsv(const wchar_t* path, PT_CardStore* store)
         char* name = pt_trim(fields[0]);
         if (name[0] == '\0') continue;
 
-        double timeSec = 0.0, frames = 0.0;
-        bool haveTime = false;
-        for (int c = 1; c < nf && !haveTime; ++c) {
-            char* tok = pt_trim(fields[c]);
-            if (tok[0] != '\0' && pt_parse_time(tok, &timeSec, &frames))
-                haveTime = true;
+        bool   isSub     = pt_is_subtract(name);
+        double timeSec   = 0.0, frames = 0.0;
+        double subAmount = 0.0;
+        bool   haveTime  = false;
+
+        if (isSub) {
+            // Subtract marker: amount lives in the comment (field 1); the time
+            // is the first *later* field that parses as a time. Starting the
+            // time scan at field 2 keeps a timecode from being read as the
+            // amount, and the amount (e.g. "1.00") from being read as a time.
+            if (nf >= 2)
+                pt_parse_price(pt_trim(fields[1]), &subAmount);
+            for (int c = 2; c < nf && !haveTime; ++c) {
+                char* tok = pt_trim(fields[c]);
+                if (tok[0] != '\0' && pt_parse_time(tok, &timeSec, &frames))
+                    haveTime = true;
+            }
+        } else {
+            // Normal marker: time is the first field after the name that parses.
+            for (int c = 1; c < nf && !haveTime; ++c) {
+                char* tok = pt_trim(fields[c]);
+                if (tok[0] != '\0' && pt_parse_time(tok, &timeSec, &frames))
+                    haveTime = true;
+            }
         }
         if (!haveTime) continue;              // header row or malformed -> skip
 
@@ -294,8 +319,17 @@ bool PT_LoadMarkersFromCsv(const wchar_t* path, PT_CardStore* store)
         rv->name[PT_MAX_NAME - 1] = '\0';
         rv->timeSec = timeSec;
         rv->frames  = frames;
-        rv->price = 0.0;
-        rv->matched = 0;
+        if (isSub) {
+            // Store the amount as a negative price so PT_TotalAtSeconds subtracts
+            // it with no special case. matched=1 so it never renders "(?)".
+            rv->kind    = PT_REVEAL_SUBTRACT;
+            rv->price   = -std::fabs(subAmount);
+            rv->matched = 1;
+        } else {
+            rv->kind    = PT_REVEAL_CARD;
+            rv->price   = 0.0;
+            rv->matched = 0;
+        }
 
         if (++store->markerCount >= PT_MAX_MARKERS)
             break;
@@ -322,8 +356,11 @@ void PT_ResolveReveals(PT_CardStore* store)
     if (!store) return;
 
     // Join each reveal to a card by name (case-insensitive, first match wins).
+    // Subtract reveals carry a fixed amount and are never card-joined.
     for (uint32_t i = 0; i < store->markerCount; ++i) {
         PT_Reveal* rv = &store->reveals[i];
+        if (rv->kind == PT_REVEAL_SUBTRACT)
+            continue;
         rv->price = 0.0;
         rv->matched = 0;
         for (uint32_t c = 0; c < store->count; ++c) {

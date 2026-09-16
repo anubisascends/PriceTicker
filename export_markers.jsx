@@ -1,10 +1,14 @@
 /*
 ** export_markers.jsx  -  Card Price Ticker helper
 **
-** Exports the ACTIVE SEQUENCE's markers as a "Name,Seconds" CSV that the
-** Card Price Ticker effect reads (its "Choose Markers..." button). Times are
+** Exports the ACTIVE SEQUENCE's markers as a "Name,Comment,Seconds" CSV that
+** the Card Price Ticker effect reads (its "Choose Markers..." button). Times are
 ** written RELATIVE TO THE START OF THE SELECTED CLIP, which is what the effect
 ** sees as time 0. Each marker's NAME must match a card name in your price CSV.
+**
+** Subtract markers: name a marker "[subtract]" and put the amount to subtract in
+** its COMMENT (e.g. comment "1.00"); at that marker's time the effect subtracts
+** that amount from the running total. The Comment column carries the amount.
 **
 ** Workflow:
 **   1. Scrub the timeline and press M at each reveal point to drop a sequence
@@ -46,16 +50,20 @@
         return;
     }
 
-    var rows = ["Name,Seconds"];
+    var rows = ["Name,Comment,Seconds"];
     var kept = 0;
     var m = markers.getFirstMarker();
     while (m) {
         var name = String(m.name);
         // Strip commas/newlines that would break the CSV; trim ends.
         name = name.replace(/[\r\n,]+/g, " ").replace(/^\s+|\s+$/g, "");
+        // The comment carries the subtract amount for "[subtract]" markers; it's
+        // empty for normal card markers. Same CSV-safe cleanup.
+        var comment = (m.comments != null) ? String(m.comments) : "";
+        comment = comment.replace(/[\r\n,]+/g, " ").replace(/^\s+|\s+$/g, "");
         var rel = m.start.seconds - origin;
         if (name.length > 0 && rel >= 0) {
-            rows.push(name + "," + rel.toFixed(4));
+            rows.push(name + "," + comment + "," + rel.toFixed(4));
             kept++;
         }
         m = markers.getNextMarker(m);
